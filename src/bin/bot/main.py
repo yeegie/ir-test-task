@@ -8,6 +8,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums.parse_mode import ParseMode
 
 from app.handlers import router
+from app.helpers.utils import validate_reference_file
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -20,6 +21,9 @@ async def on_startup(bot: Bot, dispatcher: Dispatcher):
     # Create temp directories
     for dirname in ["input", "export"]:
         os.makedirs(f"data/temp/{dirname}", exist_ok=True)
+    
+    # Check reference file
+    validate_reference_file("data/справочник.xlsx")
 
 
 async def on_shutdown(bot: Bot, dispatcher: Dispatcher):

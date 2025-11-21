@@ -1,22 +1,23 @@
-import html
 import logging
 import os
 
 from aiogram import F, Bot, Router
 from aiogram.types import Message, FSInputFile
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 
 from app.helpers.file_operations import get_file_caching_data, get_file_data
 from app.helpers.table_exporter import export_result_table
-from app.helpers.utils import is_excel, extract_article
+from app.helpers.utils import is_excel, extract_article, extract_barcode
 from app.helpers.wrappers import group_files
+
 
 router = Router()
 
 UPLOAD_DIR = "data"
 TEMP_DIR = f"{UPLOAD_DIR}/temp/input/"
 EXPORT_DIR = f"{UPLOAD_DIR}/temp/export/"
+
 
 # Welcome message handler
 @router.message(CommandStart())
@@ -42,55 +43,49 @@ async def document_handler(files: list[Message]):
     for message in files:
         document = message.document
         filename = document.file_name
-        
-        current_file_path = os.path.join(TEMP_DIR, filename)
-        current_export_file_path = None
+        temp_path = os.path.join(TEMP_DIR, filename)
 
+        # Validate filename
         if not filename or not is_excel(filename):
-            await message.reply(f"Файл <code>{filename}</code> не подходит, отправь файлы в формате xlsx или xls и в следующем формате: <code>A123 - специальный заказ.xlsx</code>")
+            await message.reply(f"Файл <code>{filename}</code> не подходи\nФормат: xlsx/xls. Название: <code>A123 - заказ.xlsx</code>")
             continue
 
-        # Save file to temp directory
-        await message.bot.download(document, current_file_path)
-        logging.info(f"Downloaded file {current_file_path}")
+        # Save file
+        await message.bot.download(document, temp_path)
+        logging.info(f"Downloaded: {temp_path}")
 
-        file_data = get_file_data(path=TEMP_DIR, filename=filename)
-        article_code = extract_article(filename)
+        file_data = get_file_data(TEMP_DIR, filename)
+        article = extract_article(filename)
 
-        # Check nullable file data
-        if len(file_data) == 0:
-            await message.reply(f"❌ Файл {filename} пустой или не удалось прочитать данные.")
+        # Validate data
+        if file_data.empty:
+            await message.reply(f"❌ Файл {filename} пустой или повреждён.")
             continue
 
-        # Find barcode from article code
-        matches = reference_data.loc[
-            reference_data["Артикул"].astype(str) == str(article_code),
-            "Штрихкод"
-        ]
-
-        if matches.empty:
-            await message.reply(f"❌ Не нашёл штрихкод для {article_code}")
+        barcode = extract_barcode(reference_data, article)
+        if barcode is None:
+            await message.reply(f"❌ Не найден штрихкод для артикула {article}")
             continue
 
-        barcode = str(matches.iloc[0])
+        # Export result
+        export_path = export_result_table(article, barcode, file_data, EXPORT_DIR)
+        result_file = FSInputFile(export_path)
 
-        # Get exported file
-        current_export_file_path = export_result_table(article_code, barcode, file_data, EXPORT_DIR)
-        result_file = FSInputFile(os.path.join(
-            EXPORT_DIR, f"code_{article_code}.xlsx"))
+        results.append((result_file, message.chat.id))
 
-        results.append((article_code, result_file, message.chat.id))
-
-    # Send results
-    for article_code, file_ref, chat_id in results:
+    # Send exported files
+    for file_ref, chat_id in results:
         await files[0].bot.send_document(chat_id, file_ref)
-        
-        # Delete temp file
-        if os.path.exists(current_file_path):
-            os.remove(current_file_path)
-        if os.path.exists(current_export_file_path):
-            os.remove(current_export_file_path)
 
-    # Final log
+    # Cleanup input and export files
+    for file in os.listdir(TEMP_DIR):
+        file_path = os.path.join(TEMP_DIR, file)
+        os.remove(file_path)
+
+    for file in os.listdir(EXPORT_DIR):
+        file_path = os.path.join(EXPORT_DIR, file)
+        os.remove(file_path)
+    
+    # Summary
     if len(results) > 1:
-        await files[0].answer(f"✅ Обработано файлов: {len(results) + 1}")
+        await files[0].answer(f"✅ Обработано файлов: {len(results)}")
